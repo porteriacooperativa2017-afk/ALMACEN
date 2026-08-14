@@ -38,9 +38,11 @@ function saveSentStockAlerts(){
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // no iniciar la cámara automáticamente; iniciar al "ABRIR ALMACEN"
   loadSentStockAlerts();
   cargarStock();
+  setTimeout(() => {
+    try { startCamera(); } catch (e) { reportCameraError(e, 'startCamera al cargar la app'); }
+  }, 500);
   // Estado inicial de botones ABRIR / CERRAR
   const btnAbrir = document.getElementById('btn-abrir');
   const btnCerrar = document.getElementById('btn-cerrar');
@@ -60,104 +62,159 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
+function getCameraErrorName(err){
+  if (!err) return 'UnknownError';
+  if (err.name) return err.name;
+  if (err.constructor && err.constructor.name) return err.constructor.name;
+  return 'Error';
+}
+
+function reportCameraError(err, context){
+  const errorName = getCameraErrorName(err);
+  const errorMessage = (err && err.message) ? err.message : String(err || 'Error desconocido');
+  console.error(`${context}:`, err);
+  const statusNode = document.getElementById('scanned-result');
+  if (statusNode) {
+    statusNode.innerHTML = `Cámara: <b>${errorName}</b><br><small>${errorMessage}</small>`;
+  }
+
+  try {
+    if (window.alert) {
+      alert(`No se pudo abrir la cámara. Error: ${errorName}\nDetalle: ${errorMessage}`);
+    }
+  } catch (e) {}
+
+  mostrarNotificacion(`No se pudo abrir la cámara (${errorName})`);
+  return { name: errorName, message: errorMessage };
+}
+
 // Inicializar la cámara del dispositivo móvil
 function iniciarEscaner() {
+  const reader = document.getElementById('reader');
+  if (!reader) return;
+
   // Preferir Html5Qrcode si está disponible
   try {
     if (window.Html5Qrcode) {
       html5QrCode = new Html5Qrcode("reader");
-      // calcular qrbox responsivo según pantalla
       const maxWidth = Math.min(Math.floor(window.innerWidth * 0.9), 640);
       const maxHeight = Math.min(Math.floor(window.innerHeight * 0.5), 480);
       const boxWidth = Math.max(220, Math.floor(maxWidth * 0.9));
       const boxHeight = Math.max(140, Math.floor(maxHeight * 0.6));
       const config = { fps: 10, qrbox: { width: boxWidth, height: boxHeight } };
-      // crear overlay visual para ayudar el encuadre
-      try{ const reader = document.getElementById('reader');
+      try{
         let overlay = document.getElementById('qr-box-overlay');
-        if(!overlay){ overlay = document.createElement('div'); overlay.id = 'qr-box-overlay'; overlay.className = 'qr-box'; overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>'; reader.appendChild(overlay); }
-        overlay.style.width = boxWidth + 'px'; overlay.style.height = boxHeight + 'px'; overlay.style.left = '50%'; overlay.style.top = '50%'; overlay.style.transform = 'translate(-50%,-50%)';
-      }catch(e){}
+        if(!overlay){
+          overlay = document.createElement('div');
+          overlay.id = 'qr-box-overlay';
+          overlay.className = 'qr-box';
+          overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>';
+          reader.appendChild(overlay);
+        }
+        overlay.style.width = boxWidth + 'px';
+        overlay.style.height = boxHeight + 'px';
+        overlay.style.left = '50%';
+        overlay.style.top = '50%';
+        overlay.style.transform = 'translate(-50%,-50%)';
+      } catch (e) {}
+
       html5QrCode.start(
-        { facingMode: "environment" },
+        { facingMode: { ideal: 'environment' } },
         config,
         (decodedText) => onCodigoLeido(decodedText),
-        (errorMessage) => {}
-      ).catch(err => {
+        (errorMessage) => {
+          if (errorMessage && typeof errorMessage === 'string' && errorMessage.indexOf('No MultiFormat Readers') === -1) {
+            console.debug('Escaneo QR no válido:', errorMessage);
+          }
+        }
+      ).then(() => {
+        const statusNode = document.getElementById('scanned-result');
+        if (statusNode) statusNode.innerHTML = 'Código: <b>Escaneando…</b>';
+      }).catch(err => {
         console.warn('html5QrCode inicio fallo, intentando fallback:', err);
         html5QrCode = null;
         iniciarEscanerFallback();
       });
       return;
     }
-  } catch (e){ console.warn('Error iniciando html5-qrcode', e); }
+  } catch (e){
+    console.warn('Error iniciando html5-qrcode', e);
+    reportCameraError(e, 'html5QrCode');
+  }
 
-  // Si no está html5-qrcode, intentar API nativa BarcodeDetector o getUserMedia
   iniciarEscanerFallback();
 }
-<script src="https://unpkg.com/html5-qrcode"></script>
+
 function iniciarEscanerFallback(){
-  // Crear video si no existe
   try{
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-      mostrarNotificacion('Cámara no disponible en este dispositivo');
+      reportCameraError(new Error('getUserMedia no está disponible en este navegador'), 'Cámara no disponible');
       return;
     }
 
-    // Crear elemento video en #reader
     const reader = document.getElementById('reader');
+    if (!reader) return;
+
     reader.innerHTML = '';
     videoElement = document.createElement('video');
     videoElement.setAttribute('playsinline','');
+    videoElement.setAttribute('autoplay','');
+    videoElement.muted = true;
     videoElement.style.width = '100%';
     reader.appendChild(videoElement);
 
-    const constraints = { video: { facingMode: { ideal: 'environment' } }, audio: false };
+    const constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
     navigator.mediaDevices.getUserMedia(constraints)
       .then(stream => {
         cameraStream = stream;
         videoElement.srcObject = stream;
+        videoElement.onloadedmetadata = () => videoElement.play().catch(() => {});
         return videoElement.play();
       })
       .then(()=>{
-        // crear overlay visual para ayudar el encuadre en fallback
         try{
           const maxWidth = Math.min(Math.floor(window.innerWidth * 0.9), 640);
           const maxHeight = Math.min(Math.floor(window.innerHeight * 0.5), 480);
           const boxWidth = Math.max(220, Math.floor(maxWidth * 0.9));
           const boxHeight = Math.max(140, Math.floor(maxHeight * 0.6));
           let overlay = document.getElementById('qr-box-overlay');
-          if(!overlay){ overlay = document.createElement('div'); overlay.id = 'qr-box-overlay'; overlay.className = 'qr-box'; overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>'; reader.appendChild(overlay); }
-          overlay.style.width = boxWidth + 'px'; overlay.style.height = boxHeight + 'px'; overlay.style.left = '50%'; overlay.style.top = '50%'; overlay.style.transform = 'translate(-50%,-50%)';
+          if(!overlay){
+            overlay = document.createElement('div');
+            overlay.id = 'qr-box-overlay';
+            overlay.className = 'qr-box';
+            overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>';
+            reader.appendChild(overlay);
+          }
+          overlay.style.width = boxWidth + 'px';
+          overlay.style.height = boxHeight + 'px';
+          overlay.style.left = '50%';
+          overlay.style.top = '50%';
+          overlay.style.transform = 'translate(-50%,-50%)';
         }catch(e){}
 
-        // comprobar BarcodeDetector
         if(window.BarcodeDetector){
           try{ barcodeDetector = new BarcodeDetector({formats: ['ean_13','ean_8','code_128','qr_code']}); }catch(e){ barcodeDetector = null; }
         }
-        // iniciar loop de detección
         detectionTimer = setInterval(async ()=>{
           try{
             if(barcodeDetector){
               const results = await barcodeDetector.detect(videoElement);
               if(results && results.length>0){ onCodigoLeido(results[0].rawValue); }
-            } else {
-              // si no hay BarcodeDetector, intentar leer frames con canvas y fallback ligero
-              const canvas = document.createElement('canvas');
-              canvas.width = videoElement.videoWidth;
-              canvas.height = videoElement.videoHeight;
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(videoElement,0,0,canvas.width,canvas.height);
-              // Sin biblioteca de decodificación no podemos extraer códigos; indicar al usuario
             }
           }catch(e){ /* ignore detection errors */ }
         }, 500);
       })
-      .catch(err => { console.error('No se pudo acceder a la cámara:', err); mostrarNotificacion('Error accediendo a la cámara'); });
-  }catch(e){ console.error('iniciarEscanerFallback error', e); mostrarNotificacion('Error iniciando escáner'); }
+      .catch(err => { reportCameraError(err, 'getUserMedia'); });
+  }catch(e){
+    console.error('iniciarEscanerFallback error', e);
+    reportCameraError(e, 'iniciarEscanerFallback');
+  }
 }
 
-function startCamera(){ if(!html5QrCode && !cameraStream) iniciarEscaner(); }
+function startCamera(){
+  if (html5QrCode || cameraStream) return;
+  iniciarEscaner();
+}
 function stopCamera(){ 
   if(html5QrCode){ html5QrCode.stop().then(()=>{ try{ html5QrCode.clear(); }catch(e){} html5QrCode = null; document.getElementById('scanned-result').innerHTML = 'Código: <b>Detenido</b>'; }).catch(()=>{}); }
   if(detectionTimer){ clearInterval(detectionTimer); detectionTimer = null; }
@@ -398,7 +455,6 @@ function cerrarAlmacen(){
   };
 
   // Registrar activación para que Apps Script procese el cierre y envíe el correo
-  try{ stopCamera(); }catch(e){}
   activarEnvioCorreo('Cierre de almacén - reporte de jornada: ' + JSON.stringify(resumen), getContactEmail())
     .then(()=> mostrarNotificacion('Solicitud de cierre registrada en ACTIVACION DE CORREO'))
     .catch(err => { console.error('Error envio cierre:', err); mostrarNotificacion('Error registrando solicitud de cierre'); });
