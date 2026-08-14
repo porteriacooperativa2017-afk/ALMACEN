@@ -1,4 +1,4 @@
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyWXIkKFqgJqG8r1KFBMzOF3SoM9_ps8Ws9EUF0wKmCgJxZWoIEzDthyOmo0KIbz0-r3g/exec";
+
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyWXIkKFqgJqG8r1KFBMzOF3SoM9_ps8Ws9EUF0wKmCgJxZWoIEzDthyOmo0KIbz0-r3g/exec";
 const CONTACT_EMAIL = "PORTERIACOOPERATIVA2017@GMAIL.COM";
 const CONTACT_EMAIL_KEY = 'PORTERIACOOPERATIVA2017@GMAIL.COM';
