@@ -12,6 +12,10 @@ function getContactEmail(){
 }
 let todosLosInsumos = [];
 let html5QrCode = null;
+let cameraStream = null;
+let videoElement = null;
+let barcodeDetector = null;
+let detectionTimer = null;
 let sessionMovements = [];
 let almacenAbierto = false;
 let aperturaHora = null;
@@ -19,8 +23,23 @@ let cierreHora = null;
 let timerInterval = null;
 let sentStockAlerts = new Set();
 
+function loadSentStockAlerts(){
+  try{
+    const raw = localStorage.getItem('sentStockAlerts');
+    if(raw){
+      const arr = JSON.parse(raw);
+      sentStockAlerts = new Set(arr);
+    }
+  }catch(e){ sentStockAlerts = new Set(); }
+}
+
+function saveSentStockAlerts(){
+  try{ localStorage.setItem('sentStockAlerts', JSON.stringify(Array.from(sentStockAlerts))); }catch(e){}
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   // no iniciar la cámara automáticamente; iniciar al "ABRIR ALMACEN"
+  loadSentStockAlerts();
   cargarStock();
   // Estado inicial de botones ABRIR / CERRAR
   const btnAbrir = document.getElementById('btn-abrir');
@@ -43,26 +62,112 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // Inicializar la cámara del dispositivo móvil
 function iniciarEscaner() {
+  // Preferir Html5Qrcode si está disponible
   try {
-    if (!window.Html5Qrcode) return;
-    html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 150 } };
+    if (window.Html5Qrcode) {
+      html5QrCode = new Html5Qrcode("reader");
+      // calcular qrbox responsivo según pantalla
+      const maxWidth = Math.min(Math.floor(window.innerWidth * 0.9), 640);
+      const maxHeight = Math.min(Math.floor(window.innerHeight * 0.5), 480);
+      const boxWidth = Math.max(220, Math.floor(maxWidth * 0.9));
+      const boxHeight = Math.max(140, Math.floor(maxHeight * 0.6));
+      const config = { fps: 10, qrbox: { width: boxWidth, height: boxHeight } };
+      // crear overlay visual para ayudar el encuadre
+      try{ const reader = document.getElementById('reader');
+        let overlay = document.getElementById('qr-box-overlay');
+        if(!overlay){ overlay = document.createElement('div'); overlay.id = 'qr-box-overlay'; overlay.className = 'qr-box'; overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>'; reader.appendChild(overlay); }
+        overlay.style.width = boxWidth + 'px'; overlay.style.height = boxHeight + 'px'; overlay.style.left = '50%'; overlay.style.top = '50%'; overlay.style.transform = 'translate(-50%,-50%)';
+      }catch(e){}
+      html5QrCode.start(
+        { facingMode: "environment" },
+        config,
+        (decodedText) => onCodigoLeido(decodedText),
+        (errorMessage) => {}
+      ).catch(err => {
+        console.warn('html5QrCode inicio fallo, intentando fallback:', err);
+        html5QrCode = null;
+        iniciarEscanerFallback();
+      });
+      return;
+    }
+  } catch (e){ console.warn('Error iniciando html5-qrcode', e); }
 
-    html5QrCode.start(
-      { facingMode: "environment" },
-      config,
-      (decodedText) => onCodigoLeido(decodedText),
-      (errorMessage) => {
-        // console.debug('scan error', errorMessage);
-      }
-    ).catch(err => console.error('No se pudo iniciar la cámara:', err));
-  } catch (e) {
-    console.error('Error iniciando escáner:', e);
-  }
+  // Si no está html5-qrcode, intentar API nativa BarcodeDetector o getUserMedia
+  iniciarEscanerFallback();
 }
 
-function startCamera(){ if(!html5QrCode) iniciarEscaner(); }
-function stopCamera(){ if(html5QrCode){ html5QrCode.stop().then(()=>{ html5QrCode.clear(); html5QrCode = null; document.getElementById('scanned-result').innerHTML = 'Código: <b>Detenido</b>'; }).catch(()=>{}); } }
+function iniciarEscanerFallback(){
+  // Crear video si no existe
+  try{
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      mostrarNotificacion('Cámara no disponible en este dispositivo');
+      return;
+    }
+
+    // Crear elemento video en #reader
+    const reader = document.getElementById('reader');
+    reader.innerHTML = '';
+    videoElement = document.createElement('video');
+    videoElement.setAttribute('playsinline','');
+    videoElement.style.width = '100%';
+    reader.appendChild(videoElement);
+
+    const constraints = { video: { facingMode: { ideal: 'environment' } }, audio: false };
+    navigator.mediaDevices.getUserMedia(constraints)
+      .then(stream => {
+        cameraStream = stream;
+        videoElement.srcObject = stream;
+        return videoElement.play();
+      })
+      .then(()=>{
+        // crear overlay visual para ayudar el encuadre en fallback
+        try{
+          const maxWidth = Math.min(Math.floor(window.innerWidth * 0.9), 640);
+          const maxHeight = Math.min(Math.floor(window.innerHeight * 0.5), 480);
+          const boxWidth = Math.max(220, Math.floor(maxWidth * 0.9));
+          const boxHeight = Math.max(140, Math.floor(maxHeight * 0.6));
+          let overlay = document.getElementById('qr-box-overlay');
+          if(!overlay){ overlay = document.createElement('div'); overlay.id = 'qr-box-overlay'; overlay.className = 'qr-box'; overlay.innerHTML = '<span class="qr-corner tl"></span><span class="qr-corner tr"></span><span class="qr-corner bl"></span><span class="qr-corner br"></span>'; reader.appendChild(overlay); }
+          overlay.style.width = boxWidth + 'px'; overlay.style.height = boxHeight + 'px'; overlay.style.left = '50%'; overlay.style.top = '50%'; overlay.style.transform = 'translate(-50%,-50%)';
+        }catch(e){}
+
+        // comprobar BarcodeDetector
+        if(window.BarcodeDetector){
+          try{ barcodeDetector = new BarcodeDetector({formats: ['ean_13','ean_8','code_128','qr_code']}); }catch(e){ barcodeDetector = null; }
+        }
+        // iniciar loop de detección
+        detectionTimer = setInterval(async ()=>{
+          try{
+            if(barcodeDetector){
+              const results = await barcodeDetector.detect(videoElement);
+              if(results && results.length>0){ onCodigoLeido(results[0].rawValue); }
+            } else {
+              // si no hay BarcodeDetector, intentar leer frames con canvas y fallback ligero
+              const canvas = document.createElement('canvas');
+              canvas.width = videoElement.videoWidth;
+              canvas.height = videoElement.videoHeight;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(videoElement,0,0,canvas.width,canvas.height);
+              // Sin biblioteca de decodificación no podemos extraer códigos; indicar al usuario
+            }
+          }catch(e){ /* ignore detection errors */ }
+        }, 500);
+      })
+      .catch(err => { console.error('No se pudo acceder a la cámara:', err); mostrarNotificacion('Error accediendo a la cámara'); });
+  }catch(e){ console.error('iniciarEscanerFallback error', e); mostrarNotificacion('Error iniciando escáner'); }
+}
+
+function startCamera(){ if(!html5QrCode && !cameraStream) iniciarEscaner(); }
+function stopCamera(){ 
+  if(html5QrCode){ html5QrCode.stop().then(()=>{ try{ html5QrCode.clear(); }catch(e){} html5QrCode = null; document.getElementById('scanned-result').innerHTML = 'Código: <b>Detenido</b>'; }).catch(()=>{}); }
+  if(detectionTimer){ clearInterval(detectionTimer); detectionTimer = null; }
+  if(cameraStream){
+    try{ cameraStream.getTracks().forEach(t=>t.stop()); }catch(e){}
+    cameraStream = null;
+  }
+  if(videoElement){ try{ videoElement.pause(); videoElement.srcObject = null; videoElement.remove(); }catch(e){} videoElement = null; }
+  document.getElementById('scanned-result').innerHTML = 'Código: <b>Detenido</b>';
+}
 
 function onCodigoLeido(decodedText){
   // Cada escaneo multiplica por la cantidad indicada
@@ -87,9 +192,10 @@ function cargarStock() {
 function checkStockAlerts(){
   todosLosInsumos.forEach(i=>{
     if(i.stock <=5 && i.stock > 0 && !sentStockAlerts.has(i.id)){
+      // Enviar solo una vez por ítem: persistir y registrar activación
       sentStockAlerts.add(i.id);
-        // Registrar activación para que Apps Script envíe la alerta desde la hoja
-        activarEnvioCorreo(`Alerta stock: ${i.nombre} (ID ${i.id}) - stock ${i.stock}`, getContactEmail()).catch(()=>{});
+      saveSentStockAlerts();
+      activarEnvioCorreo(`Alerta stock: ${i.nombre} (ID ${i.id}) - stock ${i.stock}`, getContactEmail()).catch(()=>{});
       mostrarNotificacion(`Alerta: ${i.nombre} bajo stock (${i.stock})`);
     }
   });
@@ -193,7 +299,12 @@ function registrar() {
         mostrarNotificacion(`Stock restante: ${res.nuevoStock} unidades`);
         if(res.nuevoStock <=5){
           // registrar activación para alerta crítica
-          activarEnvioCorreo(`Alerta stock crítico: ${payload.descripcion || payload.codigo} (ID ${payload.codigo}) - stock ${res.nuevoStock}`, getContactEmail()).catch(()=>{});
+          // Enviar alerta crítica solo una vez por ítem
+          if(!sentStockAlerts.has(payload.codigo)){
+            sentStockAlerts.add(payload.codigo);
+            saveSentStockAlerts();
+            activarEnvioCorreo(`Alerta stock crítico: ${payload.descripcion || payload.codigo} (ID ${payload.codigo}) - stock ${res.nuevoStock}`, getContactEmail()).catch(()=>{});
+          }
         }
       }
 
