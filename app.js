@@ -95,7 +95,7 @@ function iniciarEscaner() {
   // Si no está html5-qrcode, intentar API nativa BarcodeDetector o getUserMedia
   iniciarEscanerFallback();
 }
-
+<script src="https://unpkg.com/html5-qrcode"></script>
 function iniciarEscanerFallback(){
   // Crear video si no existe
   try{
