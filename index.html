@@ -80,10 +80,13 @@
           </div>
 
           <label for="maestranza">Maestranza</label>
-          <input type="text" id="maestranza" placeholder="Nombre completo">
+          <input type="text" id="maestranza" list="lista-personal" placeholder="Nombre completo">
+          <div id="chips-maestranza" class="personal-chips" aria-label="Personal frecuente maestranza"></div>
 
           <label for="guardia">Guardia</label>
-          <input type="text" id="guardia" placeholder="Nombre del guardia">
+          <input type="text" id="guardia" list="lista-personal" placeholder="Nombre del guardia">
+          <div id="chips-guardia" class="personal-chips" aria-label="Personal frecuente guardia"></div>
+          <datalist id="lista-personal"></datalist>
 
           <button class="btn-primary" onclick="registrar()">Confirmar Movimiento</button>
         </section>
@@ -105,6 +108,7 @@
           <input id="contact-email-input" class="contact-email-input" type="email" placeholder="Correo de contacto" />
           <button class="btn-small" onclick="generarReporteGerencial()">Generar Reporte</button>
           <button class="btn-small" onclick="enviarReporteAGerencia()">Enviar a Gerencia</button>
+          <button class="btn-small" onclick="probarConexionHoja()">Prueba conexión</button>
         </section>
 
         <section id="stock-section" class="card">
