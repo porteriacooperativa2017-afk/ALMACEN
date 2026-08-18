@@ -46,19 +46,17 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSentStockAlerts();
   cargarStock();
 
-  // Estado inicial de botones ABRIR / CERRAR
-  const btnAbrir = document.getElementById('btn-abrir');
+  const welcomeScreen = document.getElementById('welcome-screen');
+  const workspaceScreen = document.getElementById('workspace-screen');
+  if (welcomeScreen) welcomeScreen.style.display = 'flex';
+  if (workspaceScreen) workspaceScreen.style.display = 'none';
+
   const btnCerrar = document.getElementById('btn-cerrar');
-  if(btnAbrir) {
-    btnAbrir.disabled = false;
-    btnAbrir.innerText = 'ABRIR ALMACEN';
-  }
   if(btnCerrar) {
     btnCerrar.disabled = true;
     btnCerrar.innerText = 'CERRAR ALMACEN';
   }
 
-  // Rellenar input de correo con valor por defecto
   const ci = document.getElementById('contact-email-input');
   if(ci){
     const saved = localStorage.getItem(CONTACT_EMAIL_KEY);
@@ -257,11 +255,20 @@ function onCodigoLeido(decodedText){
 // Obtener datos desde la Google Sheet
 function cargarStock() {
   fetch(`${SCRIPT_URL}?action=obtenerInsumos`)
-    .then(res => res.json())
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      try { return JSON.parse(text); } catch (e) { return { exito: false, data: [], error: text || 'Respuesta no JSON' }; }
+    })
     .then(data => {
-      todosLosInsumos = data;
+      const lista = Array.isArray(data) ? data : (Array.isArray(data.data) ? data.data : []);
+      todosLosInsumos = lista;
       renderizarInsumos(todosLosInsumos);
       checkStockAlerts();
+    })
+    .catch(err => {
+      console.error('Error cargando stock:', err);
+      todosLosInsumos = [];
+      renderizarInsumos([]);
     });
 }
 
@@ -323,6 +330,20 @@ function filtrarInsumos() {
   renderizarInsumos(filtrados);
 }
 
+function setValidationMessage(message, isError = true) {
+  const el = document.getElementById('validation-message');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.display = message ? 'block' : 'none';
+  el.style.color = isError ? '#b00020' : '#0a7f52';
+  el.style.background = isError ? '#fdecea' : '#e8f7ef';
+  el.style.border = isError ? '1px solid #f5c2c7' : '1px solid #b7e4c7';
+}
+
+function clearValidationMessage() {
+  setValidationMessage('', true);
+}
+
 function registrar() {
   const payload = {
     tipo: document.getElementById("tipo").value,
@@ -334,6 +355,7 @@ function registrar() {
   };
 
   if(!payload.codigo){
+    setValidationMessage('Por favor ingresa el código.');
     alert('Por favor ingresa el código.');
     return;
   }
@@ -342,20 +364,43 @@ function registrar() {
   if(!existe && payload.tipo === 'INGRESO'){
     payload.nuevoItem = true;
     if(!payload.descripcion || payload.descripcion.trim().length === 0){
+      setValidationMessage('Para un nuevo producto, ingresa la descripción.');
       alert('Para un nuevo producto, ingresa la descripción.');
       return;
     }
   }
 
+  if(!existe && payload.tipo === 'RETIRO'){
+    setValidationMessage('No se puede egresar un insumo nuevo. Primero debe registrarse como ingreso.');
+    alert('No se puede egresar un insumo nuevo. Primero debe registrarse como ingreso.');
+    return;
+  }
+
   if(payload.tipo === 'RETIRO' && (!payload.maestranza || !payload.guardia)){
+    setValidationMessage('Para RETIRO completa Maestranza y Guardia.');
     alert('Para RETIRO completa Maestranza y Guardia.');
     return;
   }
 
+  setValidationMessage('Registro válido.', false);
+  setTimeout(() => clearValidationMessage(), 1800);
+
   payload.cantidad = Number(payload.cantidad) || 1;
 
-  fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(payload) })
-    .then(res => res.json())
+  const registroPayload = {
+    action: 'registrarMovimiento',
+    ...payload
+  };
+
+  fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(registroPayload)
+  })
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      try { return JSON.parse(text); } catch (e) { return { exito: false, error: text || 'Respuesta no JSON' }; }
+    })
     .then(res => {
       if(res.exito) {
         const movimiento = {
@@ -369,6 +414,20 @@ function registrar() {
         };
         sessionMovements.push(movimiento);
 
+        const itemIndex = todosLosInsumos.findIndex(x => String(x.id) === String(payload.codigo));
+        if(itemIndex >= 0) {
+          const stockActual = Number(todosLosInsumos[itemIndex].stock) || 0;
+          const nuevoStock = (payload.tipo === 'INGRESO') ? stockActual + payload.cantidad : Math.max(0, stockActual - payload.cantidad);
+          todosLosInsumos[itemIndex].stock = nuevoStock;
+        } else if(payload.tipo === 'INGRESO') {
+          todosLosInsumos.push({
+            id: payload.codigo,
+            nombre: payload.descripcion || 'Nuevo insumo',
+            stock: payload.cantidad,
+            descripcion: payload.descripcion || ''
+          });
+        }
+
         if(res.nuevoStock !== undefined){
           mostrarNotificacion(`Stock restante: ${res.nuevoStock} unidades`);
           if(res.nuevoStock <= 5){
@@ -381,10 +440,16 @@ function registrar() {
         }
         alert("Movimiento registrado con éxito");
         document.getElementById("codigo").value = "";
-        cargarStock();
+        document.getElementById("descripcion").value = "";
+        setTimeout(() => cargarStock(), 250);
+        renderizarInsumos(todosLosInsumos);
       } else {
         alert("Error: " + res.error);
       }
+    })
+    .catch(err => {
+      console.error('Error registrando movimiento:', err);
+      alert('Error registrando movimiento. Revisa la consola.');
     });
 }
 
@@ -418,14 +483,31 @@ function registrarRapidoIngreso(){
   }
 
   const payload = { tipo: 'INGRESO', codigo, descripcion, cantidad, maestranza: '', guardia: '' };
+  const registroPayload = { action: 'registrarMovimiento', ...payload };
 
-  fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify(payload) })
-    .then(res => res.json())
+  fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(registroPayload)
+  })
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      try { return JSON.parse(text); } catch (e) { return { exito: false, error: text || 'Respuesta no JSON' }; }
+    })
     .then(res => {
       if(res.exito){
         mostrarNotificacion('Ingreso rápido registrado');
         sessionMovements.push({ ...payload, fecha: new Date().toISOString() });
-        cargarStock();
+
+        const itemIndex = todosLosInsumos.findIndex(x => String(x.id) === String(codigo));
+        if(itemIndex >= 0) {
+          todosLosInsumos[itemIndex].stock = Number(todosLosInsumos[itemIndex].stock || 0) + cantidad;
+        } else {
+          todosLosInsumos.push({ id: codigo, nombre: descripcion || 'Nuevo insumo', stock: cantidad, descripcion: descripcion || '' });
+        }
+
+        renderizarInsumos(todosLosInsumos);
+        setTimeout(() => cargarStock(), 250);
         document.getElementById('ing-codigo').value = '';
         document.getElementById('ing-desc').value = '';
       } else alert('Error: ' + res.error);
@@ -434,15 +516,21 @@ function registrarRapidoIngreso(){
 
 function abrirAlmacen(){
   if(almacenAbierto) return;
+
+  const welcomeScreen = document.getElementById('welcome-screen');
+  const workspaceScreen = document.getElementById('workspace-screen');
+  if (welcomeScreen) welcomeScreen.style.display = 'none';
+  if (workspaceScreen) workspaceScreen.style.display = 'block';
+
   const maestranza = document.getElementById('apertura-maestranza') ? document.getElementById('apertura-maestranza').value : '';
   const guardia = document.getElementById('apertura-guardia') ? document.getElementById('apertura-guardia').value : '';
-  
+
   aperturaHora = new Date();
   almacenAbierto = true;
   sessionMovements = [];
 
-  document.getElementById('btn-abrir').disabled = true;
-  document.getElementById('btn-cerrar').disabled = false;
+  const btnCerrar = document.getElementById('btn-cerrar');
+  if (btnCerrar) btnCerrar.disabled = false;
   startTimer();
   mostrarNotificacion('Almacén abierto');
 
@@ -462,14 +550,14 @@ function cerrarAlmacen(){
   if(!almacenAbierto) return;
   cierreHora = new Date();
   almacenAbierto = false;
-  
-  document.getElementById('btn-abrir').disabled = false;
-  document.getElementById('btn-cerrar').disabled = true;
+
+  const btnCerrar = document.getElementById('btn-cerrar');
+  if (btnCerrar) btnCerrar.disabled = true;
   stopTimer();
   stopCamera();
 
-  const maestranza = document.getElementById('apertura-maestranza') ? document.getElementById('apertura-maestranza').value : '';
-  const guardia = document.getElementById('apertura-guardia') ? document.getElementById('apertura-guardia').value : '';
+  const maestranza = document.getElementById('maestranza') ? document.getElementById('maestranza').value : '';
+  const guardia = document.getElementById('guardia') ? document.getElementById('guardia').value : '';
 
   const ingresados = sessionMovements.filter(m => m.tipo === 'INGRESO');
   const retirados = sessionMovements.filter(m => m.tipo === 'RETIRO');
@@ -482,6 +570,11 @@ function cerrarAlmacen(){
     ingresados,
     retirados
   };
+
+  const display = document.getElementById('timer-display');
+  if (display) display.textContent = `Cierre: ${cierreHora.toLocaleTimeString('es-AR', { hour12: false })}`;
+
+  mostrarNotificacion('Cierre registrado a las ' + cierreHora.toLocaleTimeString('es-AR', { hour12: false }));
 
   activarEnvioCorreo('Cierre de almacén - reporte de jornada: ' + JSON.stringify(resumen), getContactEmail())
     .then(() => mostrarNotificacion('Solicitud de cierre registrada en ACTIVACION DE CORREO'))
