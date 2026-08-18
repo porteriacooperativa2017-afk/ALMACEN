@@ -25,6 +25,15 @@ let timerInterval = null;
 let sentStockAlerts = new Set();
 const PERSONAL_CACHE_KEY = 'almacen_personal_cache';
 
+function requiereServidorWeb(){
+  if (location.protocol === 'file:') {
+    console.error('ERROR DE CONEXION: la app se abrió desde file://, pero Google Apps Script bloquea fetch por CORS. Sirve la carpeta desde un servidor web local (por ejemplo: http://localhost:8000).');
+    alert('La app debe abrirse desde un servidor web local (http://localhost) para conectarse a Google Sheets.');
+    return true;
+  }
+  return false;
+}
+
 function getPersonalCache(){
   try {
     const raw = localStorage.getItem(PERSONAL_CACHE_KEY);
@@ -499,6 +508,8 @@ function clearValidationMessage() {
 }
 
 function registrar() {
+  if (requiereServidorWeb()) return;
+
   const maestranzaEl = document.getElementById("maestranza");
   const guardiaEl = document.getElementById("guardia");
 
@@ -560,6 +571,7 @@ function registrar() {
   })
     .then(async res => {
       const text = await res.text().catch(() => '');
+      console.log('registrar() -> status:', res.status, 'ok:', res.ok, 'respuesta:', text);
       try { return JSON.parse(text); } catch (e) { return { exito: false, error: text || 'Respuesta no JSON' }; }
     })
     .then(res => {
@@ -609,7 +621,12 @@ function registrar() {
       }
     })
     .catch(err => {
-      console.error('Error registrando movimiento:', err);
+      console.error('Error registrando movimiento:', {
+        url: SCRIPT_URL,
+        protocol: location.protocol,
+        origin: location.origin,
+        error: err
+      });
       alert('Error registrando movimiento. Revisa la consola.');
     });
 }
@@ -741,6 +758,34 @@ function cerrarAlmacen(){
   if (display) display.textContent = 'Cerrado';
 
   mostrarNotificacion('Cierre registrado a las ' + cierreHora.toLocaleTimeString('es-AR', { hour12: false }));
+
+  fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'registrarCierre',
+      horaCierre: cierreHora.toISOString(),
+      maestranza: maestranza,
+      guardia: guardia
+    })
+  })
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      console.log('registrarCierre() -> status:', res.status, 'ok:', res.ok, 'respuesta:', text);
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return { exito: false, error: text || 'Respuesta no JSON' };
+      }
+    })
+    .then(res => {
+      if (!res || !res.exito) {
+        console.warn('No se pudo registrar el cierre en la hoja:', res);
+      }
+    })
+    .catch(err => {
+      console.error('Error registrando cierre en la hoja:', err);
+    });
 
   activarEnvioCorreo('Cierre de almacén - reporte de jornada: ' + JSON.stringify(resumen), getContactEmail())
     .then(() => mostrarNotificacion('Solicitud de cierre registrada en ACTIVACION DE CORREO'))
