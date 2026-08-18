@@ -23,6 +23,158 @@ let aperturaHora = null;
 let cierreHora = null;
 let timerInterval = null;
 let sentStockAlerts = new Set();
+const PERSONAL_CACHE_KEY = 'almacen_personal_cache';
+
+function getPersonalCache(){
+  try {
+    const raw = localStorage.getItem(PERSONAL_CACHE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(Boolean).map(v => String(v).trim()).filter(Boolean) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function savePersonalCache(list){
+  try {
+    const clean = Array.from(new Set((list || []).map(v => String(v).trim()).filter(Boolean))).slice(0, 50);
+    localStorage.setItem(PERSONAL_CACHE_KEY, JSON.stringify(clean));
+    return clean;
+  } catch (e) {
+    return [];
+  }
+}
+
+function registrarPersonalEnCache(nombre){
+  if (!nombre) return getPersonalCache();
+  const nombreLimpio = String(nombre).trim();
+  if (!nombreLimpio) return getPersonalCache();
+  const actual = getPersonalCache();
+  const next = [nombreLimpio, ...actual.filter(v => v.toLowerCase() !== nombreLimpio.toLowerCase())].slice(0, 50);
+  savePersonalCache(next);
+  guardarPersonalEnHoja(nombreLimpio);
+  return next;
+}
+
+async function cargarPersonalDesdeHoja(){
+  try {
+    const res = await fetch(`${SCRIPT_URL}?action=obtenerPersonal`);
+    const text = await res.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch (e) { data = { exito: false, error: text }; }
+
+    if (data && Array.isArray(data.personal)) {
+      savePersonalCache(data.personal);
+      syncPersonalDatalist();
+    }
+  } catch (e) {
+    console.warn('No se pudo cargar personal desde la hoja:', e);
+  }
+}
+
+function guardarPersonalEnHoja(nombre){
+  if (!nombre || !String(nombre).trim()) return Promise.resolve({ exito: false, error: 'Nombre vacío' });
+  const payload = { action: 'guardarPersonal', nombre: String(nombre).trim() };
+
+  return fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      try { return JSON.parse(text); } catch (e) { return { exito: false, raw: text }; }
+    })
+    .catch(err => {
+      console.warn('No se pudo guardar personal en hoja:', err);
+      return { exito: false, error: String(err) };
+    });
+}
+
+function syncPersonalDatalist(){
+  const datalist = document.getElementById('lista-personal');
+  if (!datalist) return;
+  const personal = getPersonalCache();
+  datalist.innerHTML = personal.map(nombre => `<option value="${nombre}"></option>`).join('');
+  renderPersonalChips();
+}
+
+function renderPersonalChips(){
+  const personal = getPersonalCache();
+  const targetIds = ['chips-maestranza', 'chips-guardia'];
+
+  targetIds.forEach(targetId => {
+    const container = document.getElementById(targetId);
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (!personal.length) {
+      const empty = document.createElement('small');
+      empty.textContent = 'Sin nombres guardados aún';
+      empty.style.color = '#6b7280';
+      empty.style.fontSize = '11px';
+      container.appendChild(empty);
+      return;
+    }
+
+    personal.forEach(nombre => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'personal-chip';
+      btn.textContent = nombre;
+      btn.title = 'Seleccionar ' + nombre;
+      btn.style.display = 'inline-block';
+      btn.style.margin = '4px 6px 0 0';
+      btn.style.padding = '6px 10px';
+      btn.style.borderRadius = '999px';
+      btn.style.border = '1px solid #dfe3ea';
+      btn.style.background = '#f5f7fb';
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '12px';
+      btn.style.color = '#1f2937';
+      btn.addEventListener('click', () => {
+        const inputId = targetId === 'chips-maestranza' ? 'maestranza' : 'guardia';
+        const input = document.getElementById(inputId);
+        if (input) {
+          input.value = nombre;
+          input.focus();
+        }
+      });
+      container.appendChild(btn);
+    });
+  });
+}
+
+function cargarPersonalDesdeCache(){
+  syncPersonalDatalist();
+  const maestranza = document.getElementById('maestranza');
+  const guardia = document.getElementById('guardia');
+
+  if (maestranza) {
+    maestranza.addEventListener('change', () => {
+      registrarPersonalEnCache(maestranza.value);
+      syncPersonalDatalist();
+    });
+    maestranza.addEventListener('blur', () => {
+      registrarPersonalEnCache(maestranza.value);
+      syncPersonalDatalist();
+    });
+  }
+
+  if (guardia) {
+    guardia.addEventListener('change', () => {
+      registrarPersonalEnCache(guardia.value);
+      syncPersonalDatalist();
+    });
+    guardia.addEventListener('blur', () => {
+      registrarPersonalEnCache(guardia.value);
+      syncPersonalDatalist();
+    });
+  }
+
+  renderPersonalChips();
+}
 
 function loadSentStockAlerts(){
   try{
@@ -44,6 +196,8 @@ function saveSentStockAlerts(){
 
 document.addEventListener("DOMContentLoaded", () => {
   loadSentStockAlerts();
+  cargarPersonalDesdeCache();
+  cargarPersonalDesdeHoja();
   cargarStock();
 
   const welcomeScreen = document.getElementById('welcome-screen');
@@ -345,13 +499,20 @@ function clearValidationMessage() {
 }
 
 function registrar() {
+  const maestranzaEl = document.getElementById("maestranza");
+  const guardiaEl = document.getElementById("guardia");
+
+  if (maestranzaEl && maestranzaEl.value) registrarPersonalEnCache(maestranzaEl.value);
+  if (guardiaEl && guardiaEl.value) registrarPersonalEnCache(guardiaEl.value);
+  syncPersonalDatalist();
+
   const payload = {
     tipo: document.getElementById("tipo").value,
     codigo: document.getElementById("codigo").value,
     descripcion: document.getElementById("descripcion") ? document.getElementById("descripcion").value : undefined,
     cantidad: document.getElementById("cantidad").value,
-    maestranza: document.getElementById("maestranza").value,
-    guardia: document.getElementById("guardia").value
+    maestranza: maestranzaEl ? maestranzaEl.value : '',
+    guardia: guardiaEl ? guardiaEl.value : ''
   };
 
   if(!payload.codigo){
@@ -551,6 +712,11 @@ function cerrarAlmacen(){
   cierreHora = new Date();
   almacenAbierto = false;
 
+  const welcomeScreen = document.getElementById('welcome-screen');
+  const workspaceScreen = document.getElementById('workspace-screen');
+  if (welcomeScreen) welcomeScreen.style.display = 'flex';
+  if (workspaceScreen) workspaceScreen.style.display = 'none';
+
   const btnCerrar = document.getElementById('btn-cerrar');
   if (btnCerrar) btnCerrar.disabled = true;
   stopTimer();
@@ -572,7 +738,7 @@ function cerrarAlmacen(){
   };
 
   const display = document.getElementById('timer-display');
-  if (display) display.textContent = `Cierre: ${cierreHora.toLocaleTimeString('es-AR', { hour12: false })}`;
+  if (display) display.textContent = 'Cerrado';
 
   mostrarNotificacion('Cierre registrado a las ' + cierreHora.toLocaleTimeString('es-AR', { hour12: false }));
 
@@ -584,6 +750,7 @@ function cerrarAlmacen(){
     });
 
   sessionMovements = [];
+  aperturaHora = null;
 }
 
 function startTimer(){
@@ -735,5 +902,37 @@ function activarEnvioCorreo(motivo, destinoEmail){
       console.warn('activarEnvioCorreo (no crítico):', err);
       mostrarNotificacion('Solicitud registrada localmente (sin confirmar servidor)');
       return { exito: false, error: String(err) };
+    });
+}
+
+function probarConexionHoja(){
+  console.group('Prueba de conexión a Google Sheet');
+  console.log('URL de Sheets:', SCRIPT_URL);
+  console.log('Cache de personal:', getPersonalCache());
+
+  fetch(`${SCRIPT_URL}?action=verificarConexion`, { method: 'GET' })
+    .then(async res => {
+      const text = await res.text();
+      console.log('HTTP status:', res.status, res.ok);
+      console.log('Respuesta raw:', text);
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { raw: text };
+      }
+      console.log('Respuesta parseada:', data);
+      console.groupEnd();
+
+      if (res.ok && data && data.exito) {
+        alert('Conexión con Google Sheets: OK. La hoja responde correctamente.');
+      } else {
+        alert('No hay conexión con la hoja de cálculo. Revisa la consola y la URL del Web App.');
+      }
+    })
+    .catch(err => {
+      console.error('Error de conexión a Sheet:', err);
+      console.groupEnd();
+      alert('Error de red o de Web App. Revisa la consola.');
     });
 }
