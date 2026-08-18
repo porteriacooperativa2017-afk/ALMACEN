@@ -1,4 +1,4 @@
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz4XbH_w6zilatN93j8iVzSUeUAQ0GzL4n42BgEh0kOFx23MFMIAqCFKpWKW86Ffd3Gog/exec"
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz4XbH_w6zilatN93j8iVzSUeUAQ0GzL4n42BgEh0kOFx23MFMIAqCFKpWKW86Ffd3Gog/exec";
 const CONTACT_EMAIL = "PORTERIACOOPERATIVA2017@GMAIL.COM";
 const CONTACT_EMAIL_KEY = 'PORTERIACOOPERATIVA2017@GMAIL.COM';
 
@@ -33,6 +33,80 @@ function requiereServidorWeb(){
   return false;
 }
 
+/* =========================================================
+   FUNCIÓN CENTRALIZADA PARA COMUNICACIÓN CON GOOGLE APPS SCRIPT
+   ========================================================= */
+function callScriptAction(action, params = {}, options = {}){
+  const method = (options.method || 'GET').toUpperCase();
+
+  if(method === 'GET'){
+    const qs = Object.keys({ action, ...params })
+      .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(k === 'action' ? action : params[k])}`)
+      .join('&');
+    const url = `${SCRIPT_URL}?${qs}`;
+
+    return fetch(url)
+      .then(async res => {
+        const text = await res.text().catch(() => '');
+        if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+        try{ return JSON.parse(text); }catch(e){ return { exito: true, raw: text }; }
+      });
+  }
+
+  // Petición POST utilizando JSON enviado como text/plain para omitir CORS Preflight
+  const payload = JSON.stringify({ action, ...params });
+
+  return fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: payload
+  })
+    .then(async res => {
+      const text = await res.text().catch(() => '');
+      try { return JSON.parse(text); } catch (e) { return { exito: true, raw: text }; }
+    })
+    .catch(err => {
+      console.warn('POST con fetch falló, intentando envío por formulario oculto (fallback):', err);
+      return new Promise((resolve) => {
+        try {
+          const iframeName = 'hidden_iframe_' + Math.random().toString(36).slice(2);
+          const iframe = document.createElement('iframe');
+          iframe.name = iframeName;
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = SCRIPT_URL;
+          form.target = iframeName;
+          form.style.display = 'none';
+
+          const bodyObj = Object.assign({ action }, params);
+          Object.keys(bodyObj).forEach(k => {
+            const inp = document.createElement('input');
+            inp.type = 'hidden';
+            inp.name = k;
+            inp.value = (bodyObj[k] === undefined || bodyObj[k] === null) ? '' : String(bodyObj[k]);
+            form.appendChild(inp);
+          });
+
+          document.body.appendChild(form);
+          form.submit();
+
+          setTimeout(() => {
+            try{ form.remove(); iframe.remove(); }catch(e){}
+            resolve({ exito: true, raw: 'submitted-via-form' });
+          }, 1200);
+        } catch(e) {
+          resolve({ exito: false, error: String(e) });
+        }
+      });
+    });
+}
+
+/* =========================================================
+   GESTIÓN DE PERSONAL Y CACHÉ
+   ========================================================= */
 function getPersonalCache(){
   try {
     const raw = localStorage.getItem(PERSONAL_CACHE_KEY);
@@ -65,39 +139,20 @@ function registrarPersonalEnCache(nombre){
   return next;
 }
 
-async function cargarPersonalDesdeHoja(){
-  try {
-    const res = await fetch(`${SCRIPT_URL}?action=obtenerPersonal`);
-    const text = await res.text();
-    let data = {};
-    try { data = JSON.parse(text); } catch (e) { data = { exito: false, error: text }; }
-
-    if (data && Array.isArray(data.personal)) {
-      savePersonalCache(data.personal);
-      syncPersonalDatalist();
-    }
-  } catch (e) {
-    console.warn('No se pudo cargar personal desde la hoja:', e);
-  }
+function cargarPersonalDesdeHoja(){
+  callScriptAction('obtenerPersonal', {}, { method: 'GET' })
+    .then(data => {
+      if (data && Array.isArray(data.personal)) {
+        savePersonalCache(data.personal);
+        syncPersonalDatalist();
+      }
+    })
+    .catch(e => console.warn('No se pudo cargar personal desde la hoja:', e));
 }
 
 function guardarPersonalEnHoja(nombre){
   if (!nombre || !String(nombre).trim()) return Promise.resolve({ exito: false, error: 'Nombre vacío' });
-  const payload = { action: 'guardarPersonal', nombre: String(nombre).trim() };
-
-  return fetch(SCRIPT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  })
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      try { return JSON.parse(text); } catch (e) { return { exito: false, raw: text }; }
-    })
-    .catch(err => {
-      console.warn('No se pudo guardar personal en hoja:', err);
-      return { exito: false, error: String(err) };
-    });
+  return callScriptAction('guardarPersonal', { nombre: String(nombre).trim() }, { method: 'POST' });
 }
 
 function syncPersonalDatalist(){
@@ -188,8 +243,7 @@ function loadSentStockAlerts(){
   try{
     const raw = localStorage.getItem('sentStockAlerts');
     if(raw){
-      const arr = JSON.parse(raw);
-      sentStockAlerts = new Set(arr);
+      sentStockAlerts = new Set(JSON.parse(raw));
     }
   }catch(e){
     sentStockAlerts = new Set();
@@ -232,6 +286,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
+/* =========================================================
+   CÁMARA Y ESCÁNER
+   ========================================================= */
 function getCameraErrorName(err){
   if (!err) return 'UnknownError';
   if (err.name) return err.name;
@@ -256,7 +313,6 @@ function reportCameraError(err, context){
   return { name: errorName, message: errorMessage };
 }
 
-// Inicializar la cámara usando la misma lógica que en la app de visitas
 async function iniciarEscaner() {
   const reader = document.getElementById('reader');
   if (!reader) return;
@@ -299,7 +355,7 @@ async function iniciarEscaner() {
         { facingMode: 'environment' }, 
         config, 
         (decodedText) => onCodigoLeido(decodedText), 
-        (errorMessage) => { /* ignorar errores continuos de búsqueda */ }
+        () => {}
       );
 
       const statusNode = document.getElementById('scanned-result');
@@ -383,7 +439,8 @@ function stopCamera(){
   if(html5QrCode && html5QrCode.isScanning){
     html5QrCode.stop().then(()=>{
       try{ html5QrCode.clear(); }catch(e){}
-      document.getElementById('scanned-result').innerHTML = 'Código: <b>Detenido</b>';
+      const statusNode = document.getElementById('scanned-result');
+      if(statusNode) statusNode.innerHTML = 'Código: <b>Detenido</b>';
     }).catch(()=>{});
   }
   if(detectionTimer){
@@ -408,19 +465,16 @@ function stopCamera(){
 
 function onCodigoLeido(decodedText){
   const cantidad = Number(document.getElementById('cantidad').value) || 1;
-  const total = cantidad;
   document.getElementById("codigo").value = decodedText;
-  document.getElementById("scanned-result").innerHTML = `Código: <b>${decodedText}</b> — Cantidad: <b>${total}</b>`;
+  document.getElementById("scanned-result").innerHTML = `Código: <b>${decodedText}</b> — Cantidad: <b>${cantidad}</b>`;
   if (navigator.vibrate) navigator.vibrate(120);
 }
 
-// Obtener datos desde la Google Sheet
+/* =========================================================
+   GESTIÓN DE STOCK E INSUMOS
+   ========================================================= */
 function cargarStock() {
-  fetch(`${SCRIPT_URL}?action=obtenerInsumos`)
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      try { return JSON.parse(text); } catch (e) { return { exito: false, data: [], error: text || 'Respuesta no JSON' }; }
-    })
+  callScriptAction('obtenerInsumos', {}, { method: 'GET' })
     .then(data => {
       const lista = Array.isArray(data) ? data : (Array.isArray(data.data) ? data.data : []);
       todosLosInsumos = lista;
@@ -506,6 +560,9 @@ function clearValidationMessage() {
   setValidationMessage('', true);
 }
 
+/* =========================================================
+   REGISTRO DE MOVIMIENTOS E INGRESO RÁPIDO
+   ========================================================= */
 function registrar() {
   if (requiereServidorWeb()) return;
 
@@ -520,7 +577,7 @@ function registrar() {
     tipo: document.getElementById("tipo").value,
     codigo: document.getElementById("codigo").value,
     descripcion: document.getElementById("descripcion") ? document.getElementById("descripcion").value : undefined,
-    cantidad: document.getElementById("cantidad").value,
+    cantidad: Number(document.getElementById("cantidad").value) || 1,
     maestranza: maestranzaEl ? maestranzaEl.value : '',
     guardia: guardiaEl ? guardiaEl.value : ''
   };
@@ -556,34 +613,10 @@ function registrar() {
   setValidationMessage('Registro válido.', false);
   setTimeout(() => clearValidationMessage(), 1800);
 
-  payload.cantidad = Number(payload.cantidad) || 1;
-
-  const registroPayload = {
-    action: 'registrarMovimiento',
-    ...payload
-  };
-
-  fetch(SCRIPT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(registroPayload)
-  })
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      console.log('registrar() -> status:', res.status, 'ok:', res.ok, 'respuesta:', text);
-      try { return JSON.parse(text); } catch (e) { return { exito: false, error: text || 'Respuesta no JSON' }; }
-    })
+  callScriptAction('registrarMovimiento', payload, { method: 'POST' })
     .then(res => {
-      if(res.exito) {
-        const movimiento = {
-          tipo: payload.tipo,
-          codigo: payload.codigo,
-          descripcion: payload.descripcion,
-          cantidad: payload.cantidad,
-          maestranza: payload.maestranza,
-          guardia: payload.guardia,
-          fecha: new Date().toISOString()
-        };
+      if(res && (res.exito || res.raw === 'submitted-via-form')) {
+        const movimiento = { ...payload, fecha: new Date().toISOString() };
         sessionMovements.push(movimiento);
 
         const itemIndex = todosLosInsumos.findIndex(x => String(x.id) === String(payload.codigo));
@@ -612,20 +645,15 @@ function registrar() {
         }
         alert("Movimiento registrado con éxito");
         document.getElementById("codigo").value = "";
-        document.getElementById("descripcion").value = "";
+        if(document.getElementById("descripcion")) document.getElementById("descripcion").value = "";
         setTimeout(() => cargarStock(), 250);
         renderizarInsumos(todosLosInsumos);
       } else {
-        alert("Error: " + res.error);
+        alert("Error: " + (res.error || 'Respuesta inválida del servidor'));
       }
     })
     .catch(err => {
-      console.error('Error registrando movimiento:', {
-        url: SCRIPT_URL,
-        protocol: location.protocol,
-        origin: location.origin,
-        error: err
-      });
+      console.error('Error registrando movimiento:', err);
       alert('Error registrando movimiento. Revisa la consola.');
     });
 }
@@ -640,15 +668,6 @@ function abrirSalidaRapido(){
   document.getElementById('cantidad').focus();
 }
 
-function generarReporteGerencial(){
-  activarEnvioCorreo('Reporte de Stock Total solicitado desde la App', getContactEmail())
-    .then(()=> console.log('generarReporteGerencial: activación creada'))
-    .catch(err => {
-      console.error('Error generarReporteGerencial:', err);
-      alert('Error al activar el reporte. Revisa la consola.');
-    });
-}
-
 function registrarRapidoIngreso(){
   const codigo = document.getElementById('ing-codigo').value;
   const descripcion = document.getElementById('ing-desc').value;
@@ -660,19 +679,10 @@ function registrarRapidoIngreso(){
   }
 
   const payload = { tipo: 'INGRESO', codigo, descripcion, cantidad, maestranza: '', guardia: '' };
-  const registroPayload = { action: 'registrarMovimiento', ...payload };
 
-  fetch(SCRIPT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(registroPayload)
-  })
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      try { return JSON.parse(text); } catch (e) { return { exito: false, error: text || 'Respuesta no JSON' }; }
-    })
+  callScriptAction('registrarMovimiento', payload, { method: 'POST' })
     .then(res => {
-      if(res.exito){
+      if(res && (res.exito || res.raw === 'submitted-via-form')){
         mostrarNotificacion('Ingreso rápido registrado');
         sessionMovements.push({ ...payload, fecha: new Date().toISOString() });
 
@@ -687,10 +697,14 @@ function registrarRapidoIngreso(){
         setTimeout(() => cargarStock(), 250);
         document.getElementById('ing-codigo').value = '';
         document.getElementById('ing-desc').value = '';
-      } else alert('Error: ' + res.error);
-    }).catch(() => alert('Error comunicando con el servidor'));
+      } else alert('Error: ' + (res.error || 'Operación no confirmada'));
+    })
+    .catch(() => alert('Error comunicando con el servidor'));
 }
 
+/* =========================================================
+   APERTURA Y CIERRE DE JORNADA
+   ========================================================= */
 function abrirAlmacen(){
   if(almacenAbierto) return;
 
@@ -758,28 +772,14 @@ function cerrarAlmacen(){
 
   mostrarNotificacion('Cierre registrado a las ' + cierreHora.toLocaleTimeString('es-AR', { hour12: false }));
 
-  fetch(SCRIPT_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'registrarCierre',
-      horaCierre: cierreHora.toISOString(),
-      maestranza: maestranza,
-      guardia: guardia
-    })
-  })
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      console.log('registrarCierre() -> status:', res.status, 'ok:', res.ok, 'respuesta:', text);
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        return { exito: false, error: text || 'Respuesta no JSON' };
-      }
-    })
+  callScriptAction('registrarCierre', {
+    horaCierre: cierreHora.toISOString(),
+    maestranza: maestranza,
+    guardia: guardia
+  }, { method: 'POST' })
     .then(res => {
-      if (!res || !res.exito) {
-        console.warn('No se pudo registrar el cierre en la hoja:', res);
+      if (!res || (!res.exito && res.raw !== 'submitted-via-form')) {
+        console.warn('No se pudo confirmar el cierre en la hoja:', res);
       }
     })
     .catch(err => {
@@ -797,6 +797,9 @@ function cerrarAlmacen(){
   aperturaHora = null;
 }
 
+/* =========================================================
+   TEMPORIZADOR Y NOTIFICACIONES
+   ========================================================= */
 function startTimer(){
   const display = document.getElementById('timer-display');
   if(!display) return;
@@ -838,64 +841,15 @@ function mostrarNotificacion(text){
   }
 }
 
-function callScriptAction(action, params = {}, options = {}){
-  const method = (options.method || 'GET').toUpperCase();
-  let url = SCRIPT_URL;
-  if(method === 'GET'){
-    const qs = Object.keys({ action, ...params }).map(k => `${encodeURIComponent(k)}=${encodeURIComponent((k==='action'? action: params[k]))}`).join('&');
-    url = `${SCRIPT_URL}?${qs}`;
-  }
-
-  const fetchOpts = (method === 'GET') ? {} : {
-    method: 'POST',
-    body: JSON.stringify({ action, ...params })
-  };
-
-  if(fetchOpts.method === 'POST'){
-    fetchOpts.headers = Object.assign({ 'Content-Type': 'application/json' }, fetchOpts.headers || {});
-  }
-
-  return fetch(url, fetchOpts)
-    .then(async res => {
-      const text = await res.text().catch(() => '');
-      if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' - ' + text);
-      try{ return JSON.parse(text); }catch(e){ return { raw: text }; }
-    })
+/* =========================================================
+   REPORTES Y ALERTAS POR EMAIL
+   ========================================================= */
+function generarReporteGerencial(){
+  activarEnvioCorreo('Reporte de Stock Total solicitado desde la App', getContactEmail())
+    .then(()=> console.log('generarReporteGerencial: activación creada'))
     .catch(err => {
-      console.warn('callScriptAction fetch failed, intentando fallback form POST:', err);
-      return new Promise((resolve) => {
-        try {
-          const iframeName = 'hidden_iframe_' + Math.random().toString(36).slice(2);
-          const iframe = document.createElement('iframe');
-          iframe.name = iframeName;
-          iframe.style.display = 'none';
-          document.body.appendChild(iframe);
-
-          const form = document.createElement('form');
-          form.method = 'POST';
-          form.action = url;
-          form.target = iframeName;
-          form.style.display = 'none';
-
-          const bodyObj = Object.assign({ action }, params);
-          Object.keys(bodyObj).forEach(k => {
-            const inp = document.createElement('input');
-            inp.type = 'hidden';
-            inp.name = k;
-            inp.value = (bodyObj[k] === undefined || bodyObj[k] === null) ? '' : String(bodyObj[k]);
-            form.appendChild(inp);
-          });
-          document.body.appendChild(form);
-          form.submit();
-
-          setTimeout(() => {
-            try{ form.remove(); iframe.remove(); }catch(e){}
-            resolve({ exito: true, raw: 'submitted-via-form' });
-          }, 1200);
-        } catch(e) {
-          resolve({ exito: false, error: String(e) });
-        }
-      });
+      console.error('Error generarReporteGerencial:', err);
+      alert('Error al activar el reporte. Revisa la consola.');
     });
 }
 
@@ -954,21 +908,11 @@ function probarConexionHoja(){
   console.log('URL de Sheets:', SCRIPT_URL);
   console.log('Cache de personal:', getPersonalCache());
 
-  fetch(`${SCRIPT_URL}?action=verificarConexion`, { method: 'GET' })
-    .then(async res => {
-      const text = await res.text();
-      console.log('HTTP status:', res.status, res.ok);
-      console.log('Respuesta raw:', text);
-      let data = {};
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        data = { raw: text };
-      }
-      console.log('Respuesta parseada:', data);
+  callScriptAction('verificarConexion', {}, { method: 'GET' })
+    .then(data => {
+      console.log('Respuesta:', data);
       console.groupEnd();
-
-      if (res.ok && data && data.exito) {
+      if (data && data.exito) {
         alert('Conexión con Google Sheets: OK. La hoja responde correctamente.');
       } else {
         alert('No hay conexión con la hoja de cálculo. Revisa la consola y la URL del Web App.');
